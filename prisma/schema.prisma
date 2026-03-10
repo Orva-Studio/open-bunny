@@ -1,0 +1,78 @@
+// This is the OpenBunny Prisma schema.
+// Run `bun run db:generate` after changes.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Stores GitHub App credentials and global settings (single row)
+model AppConfig {
+  id                            String   @id @default(cuid())
+  setupComplete                 Boolean  @default(false)
+
+  // GitHub App credentials (AES-256-GCM encrypted)
+  githubAppId                   String?
+  githubAppSlug                 String?
+  githubClientIdEncrypted       String?
+  githubClientSecretEncrypted   String?
+  githubPrivateKeyEncrypted     String?
+  githubWebhookSecretEncrypted  String?
+
+  // AI settings
+  aiProviderEncrypted           String?  // e.g. "openai"
+  aiApiKeyEncrypted             String?
+  aiReviewModel                 String?  // e.g. "gpt-4o"
+  aiLightModel                  String?  // e.g. "gpt-4o-mini"
+
+  createdAt                     DateTime @default(now())
+  updatedAt                     DateTime @updatedAt
+
+  @@map("app_config")
+}
+
+// GitHub repositories known to this installation
+model Repository {
+  id              String   @id @default(cuid())
+  githubId        Int      @unique
+  owner           String
+  name            String
+  fullName        String   @unique
+  installationId  Int
+  enabled         Boolean  @default(false)
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  reviews         Review[]
+
+  @@map("repositories")
+}
+
+// PR review records
+model Review {
+  id             String     @id @default(cuid())
+  repositoryId   String
+  repository     Repository @relation(fields: [repositoryId], references: [id])
+  prNumber       Int
+  prTitle        String
+  prUrl          String
+  headSha        String
+  status         ReviewStatus @default(PENDING)
+  summaryMarkdown String?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  @@map("reviews")
+}
+
+enum ReviewStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+  SKIPPED
+}

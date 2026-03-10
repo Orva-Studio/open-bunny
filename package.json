@@ -1,0 +1,33 @@
+{
+  "name": "openbunny",
+  "version": "0.1.0",
+  "private": true,
+  "workspaces": [
+    "apps/*"
+  ],
+  "scripts": {
+    "dev:api": "bun run --watch src/api/index.ts",
+    "dev:worker": "bun run --watch src/worker/index.ts",
+    "dev:ui": "bun run --cwd apps/ui dev",
+    "build": "bun run build:api && bun run build:worker && bun run --cwd apps/ui build",
+    "build:api": "bun build src/api/index.ts --outdir dist/api --target bun",
+    "build:worker": "bun build src/worker/index.ts --outdir dist/worker --target bun",
+    "test": "bun test",
+    "test:e2e": "bun run --cwd apps/e2e test",
+    "db:generate": "prisma generate",
+    "db:migrate": "prisma migrate deploy",
+    "db:push": "prisma db push",
+    "db:studio": "prisma studio",
+    "lint": "eslint src --ext .ts"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.0.0",
+    "hono": "^4.0.0",
+    "zod": "^3.22.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "prisma": "^6.0.0",
+    "typescript": "^5.4.0"
+  }
+}
