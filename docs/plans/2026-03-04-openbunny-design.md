@@ -83,6 +83,38 @@ services:
   redis:     # Job queue + cache
 ```
 
+**Minimal env vars required to boot:**
+
+```env
+DATABASE_URL=postgresql://...
+REDIS_URL=redis://...
+BASE_URL=http://localhost:3000   # public URL of the API (used for webhook + OAuth callbacks)
+ENCRYPTION_KEY=<32-byte hex>     # for encrypting secrets at rest
+```
+
+GitHub App credentials and AI API keys are configured through the UI after first boot — no manual copy-pasting of private keys.
+
+### First-Run Setup Wizard
+
+On first boot, the UI detects `setup_complete = false` and walks the user through three steps:
+
+**Step 1 — Create admin account**
+Set an email + password for the OpenBunny dashboard. Stored via Better Auth (bcrypt-hashed).
+
+**Step 2 — Connect GitHub (App Manifest flow)**
+OpenBunny submits a pre-filled GitHub App manifest to `https://github.com/settings/apps/new`. GitHub shows a one-click confirmation page. On approval:
+- GitHub redirects to `{BASE_URL}/api/github/manifest-callback?code=...`
+- OpenBunny exchanges the code for App ID, private key, webhook secret, client credentials
+- All credentials stored AES-256 encrypted in the `app_config` table — no env vars needed
+
+**Step 3 — Install on repositories**
+A "Install on repositories" button links to `https://github.com/apps/{app-slug}/installations/new`. The user selects repos on GitHub's UI. On completion:
+- GitHub sends `installation.created` webhook + redirects to `{BASE_URL}/api/github/install-callback`
+- Repos are stored in DB with status `disabled` (user must explicitly enable them)
+- User is redirected to the Repos page to enable the repos they want reviewed
+
+Total time from `docker compose up` to first review: ~5 minutes.
+
 ---
 
 ## Tech Stack
@@ -92,12 +124,13 @@ services:
 | Runtime | Bun |
 | API Framework | Hono |
 | Frontend | React + Vite |
-| ORM | Drizzle + PostgreSQL |
+| ORM | Prisma + PostgreSQL |
 | Queue | BullMQ (Redis) |
-| GitHub SDK | Octokit |
-| AI Providers | OpenAI SDK, Anthropic SDK, Google GenAI SDK, Ollama (OpenAI-compatible) |
-| Testing | Bun test |
-| Monorepo | Turborepo + Bun workspaces |
+| GitHub SDK | Octokit + GitHub App Manifest API |
+| Auth | Better Auth (credentials provider, Hono adapter) |
+| AI Providers | Vercel AI SDK (`ai` + provider packages) — unified interface across all providers |
+| Unit/Integration Testing | Bun test |
+| E2E Testing | Playwright |
 | Containerization | Docker Compose |
 
 ---
@@ -106,21 +139,27 @@ services:
 
 ```
 openbunny/
+├── src/
+│   ├── api/              # Hono server (webhooks, REST API, auth, setup routes)
+│   ├── worker/           # BullMQ worker (review jobs, linter/security runners)
+│   └── lib/              # shared utilities
+│       ├── config.ts     # .openbunny.json/.yaml parser (Zod)
+│       ├── crypto.ts     # AES-256-GCM encrypt/decrypt
+│       ├── db.ts         # Prisma client singleton
+│       ├── ai.ts         # Vercel AI SDK gateway
+│       ├── github.ts     # Octokit wrapper, webhook validation
+│       ├── linters/      # ESLint, Ruff, ShellCheck, etc.
+│       ├── security/     # Semgrep, Gitleaks, Trivy
+│       └── context/      # Smart context retrieval (embeddings + code search)
+├── prisma/
+│   └── schema.prisma
 ├── apps/
-│   ├── api/              # Hono server (webhooks, REST API, auth)
-│   ├── worker/           # BullMQ worker (review jobs, linter runner)
-│   └── ui/               # React + Vite dashboard
-├── packages/
-│   ├── core/             # Shared types, Zod schemas, config parser
-│   ├── ai/               # AI gateway (OpenAI, Anthropic, Gemini, Ollama adapters)
-│   ├── github/           # GitHub App client (Octokit wrapper, webhook validation)
-│   ├── linters/          # Linter runners (ESLint, Ruff, ShellCheck, etc.)
-│   ├── security/         # Security scanners (Semgrep, Gitleaks, Trivy wrappers)
-│   └── context/          # Smart context retrieval (embedding + code search)
+│   ├── ui/               # React + Vite dashboard (own package.json)
+│   └── e2e/              # Playwright E2E tests (own package.json)
+├── package.json
+├── tsconfig.json
 ├── docker-compose.yml
-├── docs/
-│   └── plans/
-└── LICENSE               # FSL-1.0-Apache-2.0
+└── .env.example
 ```
 
 ---
@@ -137,10 +176,11 @@ Both formats parsed with the same Zod schema. On validation error, post a helpfu
 
 ```yaml
 ai:
-  provider: anthropic          # openai | anthropic | google | ollama
+  provider: anthropic          # openai | anthropic | google | openai-compatible | ollama
   model: claude-sonnet-4-6
   light_model: claude-haiku-4-5  # cheaper model for summaries
-  base_url: ""                  # optional: custom OpenAI-compatible endpoint
+  base_url: ""                  # required for openai-compatible (e.g. Qwen, Baidu ERNIE, vLLM, LM Studio)
+                                 # also used by ollama (default: http://localhost:11434/v1)
 
 reviews:
   profile: chill               # chill | assertive
@@ -221,13 +261,28 @@ All security findings include severity, affected lines, and recommended remediat
 
 ### Multi-Provider AI
 
-Supported providers via a unified adapter interface:
-- Anthropic (Claude 3.x / 4.x)
-- OpenAI (GPT-4o, GPT-4o-mini)
-- Google (Gemini 2.0 Flash, Gemini Pro)
-- Ollama (any local model via OpenAI-compatible API)
+Built on the **Vercel AI SDK** (`ai` package) with per-provider adapter packages. The SDK provides a single `generateText()` call regardless of provider, with consistent error handling and TypeScript types.
+
+**First-party provider packages (install as needed):**
+- `@ai-sdk/anthropic` — Anthropic Claude (3.x / 4.x)
+- `@ai-sdk/openai` — OpenAI (GPT-4o, GPT-4o-mini, o-series)
+- `@ai-sdk/google` — Google Gemini (2.0 Flash, 2.5 Pro)
+- `@ai-sdk/openai-compatible` — any OpenAI-compatible endpoint via `base_url`
+
+**Models via `openai-compatible`:**
+- DeepSeek (V3, R1): `baseURL: "https://api.deepseek.com/v1"`
+- Qwen / Qwen3 (Alibaba DashScope): `baseURL: "https://dashscope.aliyuncs.com/compatible-mode/v1"`
+- Baidu ERNIE: via OpenAI-compatible endpoint or aggregator
+- Moonshot Kimi: via OpenAI-compatible endpoint
+- Any aggregator (OpenRouter, aihubmix): single API key, 500+ models
+
+**Local models:**
+- Ollama: community provider `ollama-ai-provider` or `ai-sdk-ollama`
+- vLLM / LM Studio: `openai-compatible` provider with local `base_url`
 
 Two-model strategy: `light_model` for summaries/walkthroughs (cheap), `model` for detailed review (capable).
+
+> **Bun note:** `generateText` (used by OpenBunny) works correctly in Bun. The known Bun production bug only affects `streamText`, which OpenBunny does not use.
 
 ---
 
@@ -237,14 +292,14 @@ Two-model strategy: `light_model` for summaries/walkthroughs (cheap), `model` fo
 
 | Table | Purpose |
 |---|---|
+| `app_config` | Singleton row: GitHub App credentials (encrypted), OpenAI key, setup state |
 | `installations` | GitHub App installs (org/repo → access token) |
-| `repositories` | Enrolled repos + cached config |
+| `repositories` | Enrolled repos + enabled/disabled flag + cached config |
 | `pull_requests` | PR state: last reviewed commit SHA, review status |
 | `reviews` | One record per completed review run |
 | `review_comments` | Individual inline + summary comments posted |
 | `jobs` | BullMQ job audit log (for debugging, retries) |
-| `users` | Web UI users (repo admins, org owners) |
-| `api_keys` | Cloud tier billing and auth |
+| `users` | Web UI admin accounts (Better Auth) |
 
 ### Key Relationships
 
@@ -282,7 +337,8 @@ review        → many review_comments
 |---|---|
 | Unit | Config parsing, prompt construction, diff parsing, linter output normalization |
 | Integration | Worker review pipeline with mocked GitHub API + mocked AI provider |
-| E2E | Webhook → worker → GitHub comment, using test GitHub App against fixture repo |
+| E2E (API) | Webhook → worker → GitHub comment, using test GitHub App against fixture repo |
+| E2E (UI) | Playwright — setup wizard flow, repo enable/disable, settings save, dashboard render |
 | Fixtures | Curated set of PR diffs: binary files, large PRs, renames, empty PRs, fork PRs, draft PRs |
 
 ### Edge Cases Covered in Tests
@@ -316,27 +372,22 @@ A CLA (Contributor License Agreement) will be required for contributions, granti
 ## AI API Key Configuration
 
 ### Self-Hosted
-API keys are set as environment variables in Docker Compose. Never stored in `.openbunny.yaml` (no secrets in repo files).
+AI API keys are configured through the OpenBunny Settings UI after first-run setup. They are stored AES-256 encrypted in the `app_config` table. No secrets need to be placed in `.env` files or `docker-compose.yml`.
 
-```yaml
-# docker-compose.yml
-services:
-  worker:
-    environment:
-      ANTHROPIC_API_KEY: sk-ant-...   # Anthropic
-      # OPENAI_API_KEY: sk-...        # OpenAI
-      # GOOGLE_API_KEY: ...           # Google Gemini
-      # OLLAMA_BASE_URL: http://...   # Local Ollama
-```
+The Settings page (v1) exposes:
+- **OpenAI API key** — masked input, stored encrypted
+- **Review model** — dropdown: `gpt-4o`, `gpt-4.1`, `o4-mini`
+- **Light model** (summaries/walkthroughs) — dropdown: `gpt-4o-mini`, `gpt-4.1-mini`
 
-`.openbunny.yaml` specifies only provider + model:
+Per-repo overrides via `.openbunny.yaml` are still supported for model selection (not for API keys):
 ```yaml
 ai:
-  provider: anthropic
-  model: claude-sonnet-4-6
+  provider: openai
+  model: gpt-4o
+  light_model: gpt-4o-mini
 ```
 
-**Key rotation:** Keys can also be set in the OpenBunny web UI (Settings → AI Provider) per organization. UI-stored keys take precedence over env vars, allowing rotation without restarting containers.
+**Key rotation:** Update in Settings UI → takes effect on next review job. No container restart needed.
 
 ### Cloud Version
 Users enter their AI API key in the OpenBunny dashboard (Settings → AI Provider). Keys are stored AES-256 encrypted in Postgres and injected into the worker at job runtime. Users can choose to use their own key or the platform's managed key (Pro plan includes pooled key access).
