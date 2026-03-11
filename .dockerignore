@@ -1,0 +1,12 @@
+node_modules
+dist
+.env
+.env.local
+apps/ui/node_modules
+apps/ui/dist
+apps/e2e/node_modules
+apps/e2e/test-results
+apps/e2e/playwright-report
+.git
+*.md
+docs/

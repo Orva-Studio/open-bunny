@@ -1,0 +1,25 @@
+node_modules/
+dist/
+.env
+.env.local
+*.env
+
+# Prisma
+prisma/migrations/
+
+# Bun
+bun.lockb
+
+# Build outputs
+apps/ui/dist/
+apps/e2e/test-results/
+apps/e2e/playwright-report/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
