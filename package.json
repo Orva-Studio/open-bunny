@@ -12,7 +12,7 @@
     "build": "bun run build:api && bun run build:worker && bun run --cwd apps/ui build",
     "build:api": "bun build src/api/index.ts --outdir dist/api --target bun",
     "build:worker": "bun build src/worker/index.ts --outdir dist/worker --target bun",
-    "test": "bun test",
+    "test": "bun test ./src",
     "test:e2e": "bun run --cwd apps/e2e test",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate deploy",
