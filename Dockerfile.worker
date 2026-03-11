@@ -1,0 +1,23 @@
+FROM oven/bun:1 AS base
+WORKDIR /app
+
+# Install system tools used by the review pipeline
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install dependencies
+COPY package.json bun.lock ./
+COPY prisma ./prisma/
+RUN bun install --frozen-lockfile --production
+
+# Generate Prisma client
+RUN bunx prisma generate
+
+# Copy source
+COPY src ./src
+COPY tsconfig.json ./
+
+CMD ["bun", "run", "src/worker/index.ts"]
